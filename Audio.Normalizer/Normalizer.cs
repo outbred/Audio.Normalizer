@@ -28,12 +28,16 @@ namespace Audio.Normalizer
         public static void NormalizeFiles(string directory, bool convertToMp3)
         {
             _oldFiles.Clear();
+            Console.WriteLine("Searching for mp3 files...");
             var mp3s = Directory.GetFiles(directory, "*.mp3", SearchOption.AllDirectories);
+            Console.WriteLine($"Found {mp3s.Length} mp3 files to normalize...");
             Parallel.ForEach(mp3s, new ParallelOptions { MaxDegreeOfParallelism = 5 },
                 (mp3, state) => Normalize(mp3, AudioType.Mp3));
 
             // convert over wmas to mp3s too
+            Console.WriteLine("Searching for wma files...");
             var wmas = Directory.GetFiles(directory, "*.wma", SearchOption.AllDirectories);
+            Console.WriteLine($"Found {wmas.Length} wma files to normalize...");
             Parallel.ForEach(wmas, new ParallelOptions { MaxDegreeOfParallelism = 5 },
                 (wma, state) => Normalize(wma, convertToMp3 ? AudioType.Mp3 : AudioType.Wma));
         }
