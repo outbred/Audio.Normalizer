@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Globalization;
 
 namespace Audio.Normalizer
 {
@@ -15,7 +16,7 @@ namespace Audio.Normalizer
             var directory = args[0];
             bool convertToMp3 = true;
             if (args.Length == 2)
-                convertToMp3 = args[1].ToUpper() == "/KEEP";
+                convertToMp3 = args[1].ToUpper(CultureInfo.InvariantCulture) == "/KEEP";
             Normalizer.NormalizeFiles(directory, convertToMp3);
             Console.WriteLine("Normalization completed.  Deleted old files? (Y|N)");
             var answer = Console.ReadKey();
