@@ -25,74 +25,117 @@ namespace Audio.Normalizer
             MediaFoundationApi.Startup();
         }
 
-        private static readonly ConcurrentBag<string> _oldFiles = new ConcurrentBag<string>();
+        private static ConcurrentBag<string> _oldFiles = new ConcurrentBag<string>();
 
-        public static void NormalizeFiles(string directory, bool convertToMp3)
+        public static void NormalizeFiles(string directory, bool convertToMp3, float volume)
         {
             _oldFiles.Clear();
             Console.WriteLine("Searching for mp3 files...");
             var mp3s = Directory.GetFiles(directory, "*.mp3", SearchOption.AllDirectories);
             Console.WriteLine($"Found {mp3s.Length} mp3 files to normalize...");
-            Parallel.ForEach(mp3s, new ParallelOptions { MaxDegreeOfParallelism = 5 },
-                (mp3, state) => Normalize(mp3, AudioType.Mp3));
+            // taglib doesn't work so well in parallel
+            //Parallel.ForEach(mp3s, new ParallelOptions { MaxDegreeOfParallelism = 5 },
+            //    (mp3, state) => Normalize(mp3, AudioType.Mp3, volume));
+            foreach (var mp3 in mp3s)
+                Normalize(mp3, AudioType.Mp3, volume);
 
-            // convert over wmas to mp3s too
-            Console.WriteLine("Searching for wma files...");
+            Console.WriteLine("\nSearching for wma files...");
             var wmas = Directory.GetFiles(directory, "*.wma", SearchOption.AllDirectories);
             Console.WriteLine($"Found {wmas.Length} wma files to normalize...");
-            Parallel.ForEach(wmas, new ParallelOptions { MaxDegreeOfParallelism = 5 },
-                (wma, state) => Normalize(wma, convertToMp3 ? AudioType.Mp3 : AudioType.Wma));
+            foreach (var wma in wmas)
+                Normalize(wma, convertToMp3 ? AudioType.Mp3 : AudioType.Wma, volume);
 
-            // convert over m4as to mp3s too
-            Console.WriteLine("Searching for m4a files...");
+            Console.WriteLine("\nSearching for m4a files...");
             var m4as = Directory.GetFiles(directory, "*.m4a", SearchOption.AllDirectories);
-            Console.WriteLine($"Found {wmas.Length} m4a files to normalize...");
-            Parallel.ForEach(m4as, new ParallelOptions { MaxDegreeOfParallelism = 5 },
-                (m4a, state) => Normalize(m4a, convertToMp3 ? AudioType.Mp3 : AudioType.M4a));
+            Console.WriteLine($"Found {m4as.Length} m4a files to normalize...");
+            foreach (var m4a in m4as)
+                Normalize(m4a, convertToMp3 ? AudioType.Mp3 : AudioType.M4a, volume);
         }
 
-        static void Normalize(string file, AudioType type)
+        static void Normalize(string file, AudioType type, float volume)
         {
-            if(!File.Exists(file))
+            if(!CheckFile(file, out var oldFile))
                 return;
 
-            var oldFile = Path.Combine(Path.GetDirectoryName(file), $"{Path.GetFileName(file)}.old");
-
-            // this file has already been normalized, so skip it
-            if (File.Exists(oldFile) && File.Exists(file))
+            try
             {
-                Console.WriteLine($"Skipping file '{file}'");
-                return;
-            }
-
-            // correct for failed normalization on this file
-            if (File.Exists(oldFile) && !File.Exists(file))
-            {
-                try { File.Move(oldFile, file); }
-                catch
+                switch(type)
                 {
-                    Console.WriteLine($"Unable to rename file '{oldFile}' to complete normalization. Please move manually and re-run.");
-                    return;
+                    case AudioType.Mp3:
+                        EncodeToMp3(oldFile, file, volume);
+                        break;
+                    case AudioType.Wma:
+                        EncodeToWma(oldFile, file, volume);
+                        break;
+                    case AudioType.M4a:
+                        EncodeToAac(oldFile, file, volume);
+                        break;
+                }
+            }
+            catch(Exception ex)
+            {
+                Console.Error.WriteLine($"Unable to normalize {file}.\n{0}", ex.Message);
+            }
+        }
+
+        private static bool CheckFile(string file, out string oldFile)
+        {
+            oldFile = "";
+            if(!File.Exists(file))
+                return false;
+
+            foreach(var extension in new[] { ".mp3", ".m4a", ".wma" })
+            {
+                var fileName = Path.GetFileNameWithoutExtension(file) + extension;
+                var oldFormat = Path.Combine(Path.GetDirectoryName(file), $"{fileName}.old");
+                oldFile = Path.Combine(Path.GetDirectoryName(file), $"{fileName}.unnormalized");
+
+                // this file has already been normalized, so skip it
+                if((File.Exists(oldFormat) || File.Exists(oldFile)) && File.Exists(file))
+                {
+                    Console.WriteLine($"Skipping file '{file}'");
+                    return false;
+                }
+
+                // correct for failed normalization on this file
+                if(File.Exists(oldFile) && !File.Exists(file))
+                {
+                    try
+                    {
+                        File.Move(oldFile, file);
+                    }
+                    catch
+                    {
+                        Console.WriteLine($"Unable to rename file '{oldFile}' to complete normalization. Please move manually and re-run.");
+                        return false;
+                    }
+                }
+
+                if(File.Exists(oldFormat) && !File.Exists(file))
+                {
+                    try
+                    {
+                        File.Move(oldFormat, file);
+                    }
+                    catch
+                    {
+                        Console.WriteLine($"Unable to rename file '{oldFormat}' to complete normalization. Please move manually and re-run.");
+                        return false;
+                    }
                 }
             }
 
-            switch(type)
-            {
-                case AudioType.Mp3:
-                    EncodeToMp3(oldFile, file);
-                    break;
-                case AudioType.Wma:
-                    EncodeToWma(oldFile, file);
-                    break;
-                case AudioType.M4a:
-                    EncodeToAac(oldFile, file);
-                    break;
-            }
+            oldFile = file + ".unnormalized";
+            return true;
         }
 
-        private static void EncodeToMp3(string file, string outPath)
+        private static void EncodeToMp3(string file, string outPath, float volume)
         {
-            var tags = TagLib.File.Create(outPath);
+
+            TagLib.File tags = null;
+            try
+            { tags = TagLib.File.Create(outPath); }
+            catch { tags = null; }
 
             try
             {
@@ -107,38 +150,27 @@ namespace Audio.Normalizer
 
             outPath = Path.Combine(Path.GetDirectoryName(outPath), Path.GetFileNameWithoutExtension(outPath) + ".mp3");
 
-            if(!FindMax(file, out var reader))
+            if(!FindMax(file, out var reader, volume))
                 return;
 
             Console.WriteLine($"Normalizing volume for {outPath}.");
-            MediaFoundationEncoder.EncodeToMp3(reader, outPath, 320000);
+            MediaFoundationEncoder.EncodeToMp3(reader, outPath, (int)(reader.Length/reader.TotalTime.TotalSeconds));
 
-            //using (var reader = new MediaFoundationReader(InputFile))
-            //{
-            //var OutputFormats = new Dictionary<string, Guid>();
-            //OutputFormats.Add("AAC", AudioSubtypes.MFAudioFormat_AAC); // Windows 8 can do a .aac extension as well
-            //OutputFormats.Add("Windows Media Audio", AudioSubtypes.MFAudioFormat_WMAudioV8);
-            //OutputFormats.Add("Windows Media Audio Professional", AudioSubtypes.MFAudioFormat_WMAudioV9 );
-            //OutputFormats.Add("MP3", AudioSubtypes.MFAudioFormat_MP3);
-            //OutputFormats.Add("Windows Media Audio Voice", AudioSubtypes.MFAudioFormat_MSP1);
-            //OutputFormats.Add("Windows Media Audio Lossless", AudioSubtypes.MFAudioFormat_WMAudio_Lossless);
-            //OutputFormats.Add("FLAC", Guid.Parse("0000f1ac-0000-0010-8000-00aa00389b71"));
-            //OutputFormats.Add("Apple Lossless (ALAC)", Guid.Parse("63616c61-0000-0010-8000-00aa00389b71"));
-
-            //using(var encoder = new MediaFoundationEncoder(MediaFoundationEncoder.GetOutputMediaTypes(AudioSubtypes.MFAudioFormat_MP3).FirstOrDefault()))
-            //{
-            //    encoder.Encode(outPath, reader);
-            //}
-
-            var newTags = TagLib.File.Create(outPath);
-            tags.Tag.CopyTo(newTags.Tag, true);
-            newTags.Save();
+            if(tags != null)
+            {
+                var newTags = TagLib.File.Create(outPath);
+                tags.Tag.CopyTo(newTags.Tag, true);
+                newTags.Save();
+            }
 
         }
 
-        private static void EncodeToWma(string file, string outPath)
+        private static void EncodeToWma(string file, string outPath, float volume)
         {
-            var tags = TagLib.File.Create(outPath);
+            TagLib.File tags = null;
+            try
+            { tags = TagLib.File.Create(outPath); }
+            catch { tags = null; }
 
             try
             {
@@ -153,20 +185,26 @@ namespace Audio.Normalizer
 
             outPath = Path.Combine(Path.GetDirectoryName(outPath), Path.GetFileNameWithoutExtension(outPath) + ".wma");
 
-            if(!FindMax(file, out var reader))
+            if(!FindMax(file, out var reader, volume))
                 return;
 
             Console.WriteLine($"Normalizing volume for {outPath}.");
-            MediaFoundationEncoder.EncodeToWma(reader, outPath, 320000);
+            MediaFoundationEncoder.EncodeToWma(reader, outPath, (int)(reader.Length/reader.TotalTime.TotalSeconds));
 
-            var newTags = TagLib.File.Create(outPath);
-            tags.Tag.CopyTo(newTags.Tag, true);
-            newTags.Save();
+            if(tags != null)
+            {
+                var newTags = TagLib.File.Create(outPath);
+                tags.Tag.CopyTo(newTags.Tag, true);
+                newTags.Save();
+            }
         }
 
-        private static void EncodeToAac(string file, string outPath)
+        private static void EncodeToAac(string file, string outPath, float volume)
         {
-            var tags = TagLib.File.Create(outPath);
+            TagLib.File tags = null;
+            try
+            { tags = TagLib.File.Create(outPath); }
+            catch { tags = null; }
 
             try
             {
@@ -181,18 +219,21 @@ namespace Audio.Normalizer
 
             outPath = Path.Combine(Path.GetDirectoryName(outPath), Path.GetFileNameWithoutExtension(outPath) + ".m4a");
 
-            if(!FindMax(file, out var reader))
+            if(!FindMax(file, out var reader, volume))
                 return;
 
             Console.WriteLine($"Normalizing volume for {outPath}.");
-            MediaFoundationEncoder.EncodeToAac(reader, outPath, 320000);
+            MediaFoundationEncoder.EncodeToAac(reader, outPath, (int)(reader.Length/reader.TotalTime.TotalSeconds));
 
-            var newTags = TagLib.File.Create(outPath);
-            tags.Tag.CopyTo(newTags.Tag, true);
-            newTags.Save();
+            if(tags != null)
+            {
+                var newTags = TagLib.File.Create(outPath);
+                tags.Tag.CopyTo(newTags.Tag, true);
+                newTags.Save();
+            }
         }
 
-        private static bool FindMax(string file, out AudioFileReader reader)
+        private static bool FindMax(string file, out AudioFileReader reader, float volume)
         {
             float max = 0;
 
@@ -218,7 +259,7 @@ namespace Audio.Normalizer
 
             // rewind and amplify
             reader.Position = 0;
-            reader.Volume = 1.0f / max;
+            reader.Volume = volume / max;
             return true;
         }
 
@@ -227,15 +268,46 @@ namespace Audio.Normalizer
             MediaFoundationApi.Shutdown();
         }
 
-        public static void CleanUp()
+        public static void Archive(string directory)
         {
-            foreach (var file in _oldFiles)
+            var unnormalized = directory + ".unnormalized";
+
+            // in case this is called on its own
+            var files = Directory.GetFiles(directory, "*.unnormalized", SearchOption.AllDirectories).ToList();
+            // TEMP
+            files = files.Concat(Directory.GetFiles(directory, "*.old", SearchOption.AllDirectories)).ToList();
+
+            foreach(var file in files.Where(File.Exists))
+            {
+                // file was: z:\music\artist\song.mp3.unnormalized
+                // now should be: z:\music.unnormalized\artist\song.mp3
+                var modded = file.Replace(".old", "").Replace(".unnormalized", "").Replace(directory, unnormalized);
+
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(modded));
+                    File.Move(file, modded);
+                }
+                catch
+                {
+                    Console.WriteLine($"Unable to move {file} to {modded}.");
+                }
+            }
+        }
+
+        public static void Cleanup(string directory)
+        {
+            var files = Directory.GetFiles(directory, "*.unnormalized", SearchOption.AllDirectories).ToList();
+            // TEMP
+            files = files.Concat(Directory.GetFiles(directory, "*.old", SearchOption.AllDirectories)).ToList();
+
+            foreach(var file in files.Where(File.Exists))
             {
                 try
                 {
                     File.Delete(file);
                 }
-                catch (Exception ex)
+                catch(Exception ex)
                 {
                     Console.Error.WriteLine($"Unable to delete {file}.", ex);
                 }

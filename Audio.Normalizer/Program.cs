@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Globalization;
+using System.IO;
+using Ookii.CommandLine;
 
 namespace Audio.Normalizer
 {
@@ -7,21 +9,33 @@ namespace Audio.Normalizer
     {
         static void Main(string[] args)
         {
-            if (args.Length == 0 || string.IsNullOrWhiteSpace(args[0]))
+            var parser = new CommandLineParser(typeof(Options), new []{ "/"});
+            Options options = null;
+            try
             {
-                Console.WriteLine("usage: normalizer.exe <directory> </keep>\nkeep - keeps files in original format; if omitted, then all files are converted to MP3 format.");
+                options = (Options)parser.Parse(args);
+                if(string.IsNullOrWhiteSpace(options.directory) || !Directory.Exists(options.directory))
+                    throw new ArgumentNullException(nameof(options.directory));
+            }
+            catch//( CommandLineArgumentException ex )
+            {
+                //Console.WriteLine(ex.Message);
+                parser.WriteUsageToConsole();
                 return;
             }
 
-            var directory = args[0];
-            bool convertToMp3 = true;
-            if (args.Length == 2)
-                convertToMp3 = args[1].ToUpper(CultureInfo.InvariantCulture) == "/KEEP";
-            Normalizer.NormalizeFiles(directory, convertToMp3);
-            Console.WriteLine("Normalization completed.  Deleted old files? (Y|N)");
-            var answer = Console.ReadKey();
-            if (answer.KeyChar == 'Y' || answer.KeyChar == 'y')
-                Normalizer.CleanUp();
+
+            if (options.normalize)
+            {
+                Normalizer.NormalizeFiles(options.directory, !options.keep, options.volume);
+                Console.WriteLine("Normalization completed\n.");
+            }
+
+            if(options.archive)
+                Normalizer.Archive(options.directory);
+
+            if (options.cleanup)
+                Normalizer.Cleanup(options.directory);
 
             Normalizer.Shutdown();
             Console.WriteLine("");
