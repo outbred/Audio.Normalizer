@@ -13,6 +13,7 @@ namespace Audio.Normalizer
 {
     public class Normalizer
     {
+        private const int NumInParallel = 8;
         private enum AudioType
         {
             Mp3,
@@ -25,31 +26,32 @@ namespace Audio.Normalizer
             MediaFoundationApi.Startup();
         }
 
-        private static ConcurrentBag<string> _oldFiles = new ConcurrentBag<string>();
-
         public static void NormalizeFiles(string directory, bool convertToMp3, float volume)
         {
-            _oldFiles.Clear();
             Console.WriteLine("Searching for mp3 files...");
             var mp3s = Directory.GetFiles(directory, "*.mp3", SearchOption.AllDirectories);
             Console.WriteLine($"Found {mp3s.Length} mp3 files to normalize...");
             // taglib doesn't work so well in parallel
-            //Parallel.ForEach(mp3s, new ParallelOptions { MaxDegreeOfParallelism = 5 },
-            //    (mp3, state) => Normalize(mp3, AudioType.Mp3, volume));
-            foreach (var mp3 in mp3s)
-                Normalize(mp3, AudioType.Mp3, volume);
+            Parallel.ForEach(mp3s, new ParallelOptions { MaxDegreeOfParallelism = NumInParallel },
+                (mp3, state) => Normalize(mp3, AudioType.Mp3, volume));
+            //foreach (var mp3 in mp3s)
+            //    Normalize(mp3, AudioType.Mp3, volume);
 
             Console.WriteLine("\nSearching for wma files...");
             var wmas = Directory.GetFiles(directory, "*.wma", SearchOption.AllDirectories);
             Console.WriteLine($"Found {wmas.Length} wma files to normalize...");
-            foreach (var wma in wmas)
-                Normalize(wma, convertToMp3 ? AudioType.Mp3 : AudioType.Wma, volume);
+            Parallel.ForEach(wmas, new ParallelOptions { MaxDegreeOfParallelism = NumInParallel },
+                (wma, state) => Normalize(wma, convertToMp3 ? AudioType.Mp3 : AudioType.Wma, volume));
+            //foreach (var wma in wmas)
+            //    Normalize(wma, convertToMp3 ? AudioType.Mp3 : AudioType.Wma, volume);
 
             Console.WriteLine("\nSearching for m4a files...");
             var m4as = Directory.GetFiles(directory, "*.m4a", SearchOption.AllDirectories);
             Console.WriteLine($"Found {m4as.Length} m4a files to normalize...");
-            foreach (var m4a in m4as)
-                Normalize(m4a, convertToMp3 ? AudioType.Mp3 : AudioType.M4a, volume);
+            Parallel.ForEach(m4as, new ParallelOptions { MaxDegreeOfParallelism = NumInParallel },
+                (m4a, state) => Normalize(m4a, convertToMp3 ? AudioType.Mp3 : AudioType.M4a, volume));
+            //foreach (var m4a in m4as)
+            //    Normalize(m4a, convertToMp3 ? AudioType.Mp3 : AudioType.M4a, volume);
         }
 
         static void Normalize(string file, AudioType type, float volume)
@@ -129,18 +131,20 @@ namespace Audio.Normalizer
             return true;
         }
 
-        private static void EncodeToMp3(string file, string outPath, float volume)
+        private static readonly object _locker = new object();
+        private static void Encode(string file, string outPath, float volume, Action<IWaveProvider, string, int> encoder, string extension)
         {
-
             TagLib.File tags = null;
-            try
-            { tags = TagLib.File.Create(outPath); }
-            catch { tags = null; }
+
+            lock (_locker)
+            {
+                try { tags = TagLib.File.Create(outPath); }
+                catch { tags = null; }
+            }
 
             try
             {
                 File.Move(outPath, file);
-                _oldFiles.Add(file);
             }
             catch(Exception ex)
             {
@@ -148,89 +152,39 @@ namespace Audio.Normalizer
                 return;
             }
 
-            outPath = Path.Combine(Path.GetDirectoryName(outPath), Path.GetFileNameWithoutExtension(outPath) + ".mp3");
+            outPath = Path.Combine(Path.GetDirectoryName(outPath), Path.GetFileNameWithoutExtension(outPath) + extension);
 
             if(!FindMax(file, out var reader, volume))
                 return;
 
             Console.WriteLine($"Normalizing volume for {outPath}.");
-            MediaFoundationEncoder.EncodeToMp3(reader, outPath, (int)(reader.Length/reader.TotalTime.TotalSeconds));
+            encoder(reader, outPath, (int) (reader.Length / reader.TotalTime.TotalSeconds));
 
-            if(tags != null)
+            lock (_locker)
             {
-                var newTags = TagLib.File.Create(outPath);
-                tags.Tag.CopyTo(newTags.Tag, true);
-                newTags.Save();
+                if (tags != null)
+                {
+                    var newTags = TagLib.File.Create(outPath);
+                    tags.Tag.CopyTo(newTags.Tag, true);
+                    newTags.Save();
+                }
             }
 
+        }
+
+        private static void EncodeToMp3(string file, string outPath, float volume)
+        {
+            Encode(file, outPath, volume, MediaFoundationEncoder.EncodeToMp3, ".mp3");
         }
 
         private static void EncodeToWma(string file, string outPath, float volume)
         {
-            TagLib.File tags = null;
-            try
-            { tags = TagLib.File.Create(outPath); }
-            catch { tags = null; }
-
-            try
-            {
-                File.Move(outPath, file);
-                _oldFiles.Add(file);
-            }
-            catch(Exception ex)
-            {
-                Console.Error.WriteLine($"Unable to move file {outPath}", ex);
-                return;
-            }
-
-            outPath = Path.Combine(Path.GetDirectoryName(outPath), Path.GetFileNameWithoutExtension(outPath) + ".wma");
-
-            if(!FindMax(file, out var reader, volume))
-                return;
-
-            Console.WriteLine($"Normalizing volume for {outPath}.");
-            MediaFoundationEncoder.EncodeToWma(reader, outPath, (int)(reader.Length/reader.TotalTime.TotalSeconds));
-
-            if(tags != null)
-            {
-                var newTags = TagLib.File.Create(outPath);
-                tags.Tag.CopyTo(newTags.Tag, true);
-                newTags.Save();
-            }
+            Encode(file, outPath, volume, MediaFoundationEncoder.EncodeToWma, ".wma");
         }
 
         private static void EncodeToAac(string file, string outPath, float volume)
         {
-            TagLib.File tags = null;
-            try
-            { tags = TagLib.File.Create(outPath); }
-            catch { tags = null; }
-
-            try
-            {
-                File.Move(outPath, file);
-                _oldFiles.Add(file);
-            }
-            catch(Exception ex)
-            {
-                Console.Error.WriteLine($"Unable to move file {outPath}", ex);
-                return;
-            }
-
-            outPath = Path.Combine(Path.GetDirectoryName(outPath), Path.GetFileNameWithoutExtension(outPath) + ".m4a");
-
-            if(!FindMax(file, out var reader, volume))
-                return;
-
-            Console.WriteLine($"Normalizing volume for {outPath}.");
-            MediaFoundationEncoder.EncodeToAac(reader, outPath, (int)(reader.Length/reader.TotalTime.TotalSeconds));
-
-            if(tags != null)
-            {
-                var newTags = TagLib.File.Create(outPath);
-                tags.Tag.CopyTo(newTags.Tag, true);
-                newTags.Save();
-            }
+            Encode(file, outPath, volume, MediaFoundationEncoder.EncodeToAac, ".m4a");
         }
 
         private static bool FindMax(string file, out AudioFileReader reader, float volume)
